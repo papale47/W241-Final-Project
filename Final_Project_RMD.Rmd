@@ -1,0 +1,171 @@
+---
+title: "Hiking Survey Analysis"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+# Loading Packages
+library(foreign)
+library(data.table)
+library(knitr)
+library(dplyr)
+library(naniar)
+library(sandwich)
+library(lmtest)
+library(stargazer)
+library(multiwayvcov)
+library(pwr)
+
+```
+
+
+```{r}
+# Cleaning and Transforming the Survey Data
+
+Hiking_Data <- read.csv(file = 'Survey_Data.csv')
+# Hiking_Data
+Hiking_Data <-
+  Hiking_Data %>%
+    rename(
+        Start_Date = StartDate,
+        Consent = Q456,
+        Duration_Seconds = Duration..in.seconds.,
+        Birth_Year = Q2,
+        Gender = Q3,
+        Gender_Self_Describe = Q3_4_TEXT,
+        Height = Q223,
+        Weight = Q224,
+        Marital_Status = Q5,
+        Have_Children = Q23,
+        Education_Level = Q7,
+        Physical_Activity_Level = Q8,
+        Hiking_Backing_Experience_Level = Q16,
+        Previous_Desert_Hiking_Experience = Q17,
+        Hiking_Exclusion_Condition = Q211,
+        Liters_of_Water_Control = Q217_1,
+        Liters_of_Water_Treatment = Q659_1
+        ) %>%
+    filter(Consent == 'I consent, begin the study' 
+        & (!is.na(Liters_of_Water_Control) == TRUE | !is.na(Liters_of_Water_Treatment) == TRUE)
+        & Hiking_Exclusion_Condition == 'No'
+        ) %>%
+    mutate_all(list(~na_if(.,""))) %>%
+    mutate(
+        Treatment_Flag = as.factor(ifelse(!is.na(Liters_of_Water_Treatment) == TRUE, 1, 0))
+        ,Male_Flag = ifelse(Gender == 'Man', 1, 0)
+        ,Duration_Seconds = as.numeric(as.character(Duration_Seconds))
+        ,Weight = as.numeric(as.character(Weight))
+        ,Height = as.numeric(as.character(Height))
+        ,Liters_of_Water_Control = as.numeric(as.character(Liters_of_Water_Control))
+        ,Liters_of_Water_Treatment = as.numeric(as.character(Liters_of_Water_Treatment))
+        ,Birth_Year = as.numeric(as.character(Birth_Year))
+        ,Liters_of_Water_Coalesced =  coalesce(Liters_of_Water_Control, Liters_of_Water_Treatment)
+        ,Gender = coalesce(Gender, Gender_Self_Describe)
+        ,Age = (2020 - Birth_Year)
+        ,BMI = (Weight*703)/(Height**2)
+         ) %>%       
+    replace_with_na_at(.vars = "BMI", condition = ~.x < 5) %>%
+    select(
+        Start_Date
+        # ,Consent
+        ,Duration_Seconds
+        ,Birth_Year
+        ,Gender
+        ,Age
+        ,Height
+        ,Weight
+        ,BMI
+        ,Marital_Status
+        ,Have_Children
+        ,Education_Level
+        ,Physical_Activity_Level
+        ,Hiking_Backing_Experience_Level
+        ,Previous_Desert_Hiking_Experience
+        ,Hiking_Exclusion_Condition
+        ,Liters_of_Water_Control
+        ,Liters_of_Water_Treatment
+        ,Liters_of_Water_Coalesced
+        ,Treatment_Flag
+    ) 
+
+head(Hiking_Data)
+```
+
+
+
+
+
+```{r}
+# Ensuring that we have adequate responses for both the treatment and control groups
+
+Hiking_Data %>%
+  group_by(Hiking_Backing_Experience_Level)%>%
+  tally()
+
+```
+
+
+
+
+
+```{r}
+# Simple T-Test to determine if there is a significant difference between the means of both groups
+
+t_test <- t.test(Hiking_Data$Liters_of_Water_Control, Hiking_Data$Liters_of_Water_Treatment)
+diff_in_mean <- t_test$estimate[2] - t_test$estimate[1]
+p_value <- t_test$p.value
+t_test
+```
+
+**Based on the p-value of `r p_value` from the t-test, we can see that the `r diff_in_mean` difference between the means is not statistically significant.**
+
+
+
+
+
+```{r}
+# Simple Linear Regression with Liters of Water Regressed on Treatment Group Dummy Variable
+mod <- lm(Hiking_Data$Liters_of_Water_Coalesced ~ Hiking_Data$Treatment_Flag)
+summary(mod)
+# plot(mod)
+
+n <- length(mod$effects)
+r2 <- summary(mod)$r.squared
+f2 <- r2/(1-r2)
+power_test_post_hoc <-pwr.f2.test(u = 1, v = n - 1 - 1, f2 = f2, sig.level = .05)
+power_test_a_priori <-pwr.f2.test(u = 1, f2 = f2, sig.level = .05, power = .8)
+power_from_experiment <- power_test_post_hoc$power
+required_n_for_a_priori <- ceiling(power_test_a_priori$v + power_test_a_priori$u + 1)
+
+# Reference
+# https://cran.r-project.org/web/packages/pwr/vignettes/pwr-vignette.html
+```
+
+**As expected, we see the same p-value and difference in means between the two groups as we saw in the t-test.  We can also see that we have a very low R-Squared value of `r r2`.  Using that R-Squared value to compute Cohens f2, we obtain an f2 value of `r f2`.  When we also factor in our low sample size of `r n` observations and seek to reject the null at a significance level of .05, we obtain a power level of `r power_from_experiment`.  It is also worth noting that given this effect size, we would need `r required_n_for_a_priori` observations to reject the null at a .05 significance level and with 80% power.**
+
+
+
+
+
+```{r}
+# Multiple Regression with Liters of Water Regressed on Treatment Group Dummy Variable and all Covariates
+mod2 <- lm(Hiking_Data$Liters_of_Water_Coalesced ~ Hiking_Data$Treatment_Flag 
+           + Hiking_Data$Gender
+           + Hiking_Data$BMI
+           + Hiking_Data$Age
+           + Hiking_Data$Marital_Status
+           + Hiking_Data$Have_Children
+           + Hiking_Data$Education_Level
+           + Hiking_Data$Physical_Activity_Level 
+           + Hiking_Data$Hiking_Backing_Experience_Level
+           + Hiking_Data$Previous_Desert_Hiking_Experience 
+          )
+summary(mod2)
+# plot(mod2)
+```
+
+**The model does not improve when adding in the additional covariates, and this is likely due to the fact that we are working with such few observations.  Until additional survey volume can be collected and the analysis re-performed, the results of this regression should be interpreted with caution if not discarded entirely.**
